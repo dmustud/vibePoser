@@ -76,7 +76,15 @@
 - 슬라이더 회전 변경 시 OSC를 즉시 매번 전송하지 않고 150ms debounce 후 한 번만 전송합니다.
 - debounce된 OSC 전송은 UI 스레드에서 슬라이더/체크박스 값을 캡처한 뒤 별도 스레드에서 계산/송출합니다.
 
-다음 최적화 단계는 `self.smpl_result`를 GPU 텐서 대신 CPU 캐시로 보관하는 작업과, 장기적으로 PyTorch 추론/변환을 별도 worker process로 분리하는 작업입니다.
+### 2026-06-17 SMPL 결과 캐시 최적화
+SMPL 변환 결과인 `self.smpl_result`는 이제 GPU 텐서가 아니라 CPU 캐시로 보관합니다.
+
+- `cache_smpl_result_on_cpu(...)`가 변환 결과 텐서를 `detach().cpu().clone()`으로 저장합니다.
+- SMPL preview나 OSC grounding 계산이 필요할 때만 `smpl_result_to_device(...)`로 현재 SMPL-X 모델 디바이스에 임시 텐서를 만듭니다.
+- OSC payload 생성은 `smpl_result_to_numpy(...)`로 CPU/NumPy 데이터를 사용합니다.
+- 이 변경은 모델 자체의 상시 VRAM 점유를 없애지는 않지만, 변환 결과 파라미터가 추가 VRAM을 계속 붙잡는 일을 줄입니다.
+
+다음 최적화 단계는 preview mesh/Matplotlib 렌더링 경량화 또는 장기적으로 PyTorch 추론/변환을 별도 worker process로 분리하는 작업입니다.
 
 ---
 

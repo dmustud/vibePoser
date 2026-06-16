@@ -693,6 +693,45 @@ class DirectMHRApp:
         for btn in [self.btn_extract, self.btn_convert, self.btn_send]:
             self.set_button_state(btn, tk.DISABLED, btn.cget('bg'))
 
+    def get_model_device(self):
+        try:
+            return next(self.smplx_model.parameters()).device
+        except Exception:
+            return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    def cache_smpl_result_on_cpu(self, result_parameters):
+        cached = {}
+        for k, v in result_parameters.items():
+            if isinstance(v, torch.Tensor):
+                cached[k] = v.detach().cpu().clone()
+            elif isinstance(v, np.ndarray):
+                cached[k] = v.copy()
+            else:
+                cached[k] = v
+        return cached
+
+    def smpl_result_to_device(self, device):
+        params = {}
+        for k, v in self.smpl_result.items():
+            if isinstance(v, torch.Tensor):
+                params[k] = v.to(device)
+            elif isinstance(v, np.ndarray):
+                params[k] = torch.from_numpy(v).float().to(device)
+            else:
+                params[k] = v
+        return params
+
+    def smpl_result_to_numpy(self):
+        data = {}
+        for k, v in self.smpl_result.items():
+            if isinstance(v, torch.Tensor):
+                data[k] = v.detach().cpu().numpy()[0]
+            elif isinstance(v, np.ndarray):
+                data[k] = v[0]
+            else:
+                data[k] = v
+        return data
+
     def btn_extract_click(self):
         self.disable_all_buttons()
         self.status_base_text = "1. 포즈 추출 중"
@@ -887,14 +926,8 @@ class DirectMHRApp:
                 progress_callback=progress_cb
             )
             
-            # Detach ALL PyTorch tensors from computation graph to prevent VRAM memory leak
-            # PyTorch keeps the MHR model alive as long as these output tensors retain their graph history!
-            self.smpl_result = {}
-            for k, v in result.result_parameters.items():
-                if isinstance(v, torch.Tensor):
-                    self.smpl_result[k] = v.detach().clone()
-                else:
-                    self.smpl_result[k] = v
+            # Keep converted parameters on CPU so the persistent cache does not pin extra VRAM.
+            self.smpl_result = self.cache_smpl_result_on_cpu(result.result_parameters)
                     
             log_cmd("SMPL 파라미터 생성 완료!", "SUCCESS", app_instance=self)
             
@@ -905,7 +938,8 @@ class DirectMHRApp:
             
             # --- Update 3D Preview with SMPL Joints ---
             with torch.no_grad():
-                smpl_out = self.smplx_model(**self.smpl_result)
+                smpl_params = self.smpl_result_to_device(device)
+                smpl_out = self.smplx_model(**smpl_params)
                 joints = smpl_out.joints.detach().cpu().numpy()[0] # [J, 3]
                 self.orig_smpl_joints = joints.copy()
                 
@@ -925,6 +959,8 @@ class DirectMHRApp:
             if hasattr(self, 'processed_data') and self.processed_data is not None:
                 del self.processed_data
                 self.processed_data = None
+
+            del result, verts, verts_cm, smpl_params, smpl_out
             
             self.is_loading = False
             return True
@@ -1082,7 +1118,8 @@ class DirectMHRApp:
 
         log_cmd("OSC 전송 준비 (배열 통합 방식)...", "INFO", app_instance=self)
         try:
-            data = {k: v.detach().cpu().numpy()[0] for k, v in self.smpl_result.items()}
+            device = self.get_model_device()
+            data = self.smpl_result_to_numpy()
             
             # --- 변환 행렬 P (Unreal 좌표계) ---
             axis_indices = {'X': 0, 'Y': 1, 'Z': 2}
@@ -1103,16 +1140,18 @@ class DirectMHRApp:
 
             # --- Unreal 바닥 접지(Grounding) 계산 ---
             with torch.no_grad():
+                 smpl_params = self.smpl_result_to_device(device)
                  smpl_out = self.smplx_model(
-                     betas=self.smpl_result.get('betas'),
-                     body_pose=self.smpl_result.get('body_pose'),
-                     global_orient=torch.from_numpy(data['global_orient']).float().to(self.smpl_result.get('global_orient').device).unsqueeze(0),
-                     transl=self.smpl_result.get('transl')
+                     betas=smpl_params.get('betas'),
+                     body_pose=smpl_params.get('body_pose'),
+                     global_orient=torch.from_numpy(data['global_orient']).float().to(device).unsqueeze(0),
+                     transl=smpl_params.get('transl')
                  )
                  joints_unreal = (P @ (smpl_out.joints[0].cpu().numpy().T * 100.0)).T
                  pel_unreal = joints_unreal[0].copy()
                  min_z_unreal = np.min(joints_unreal[:, 2])
                  pel_unreal[2] -= min_z_unreal
+                 del smpl_params, smpl_out
 
             # ==========================================
             # [수정된 핵심 로직] 한 번에 보낼 문자열 리스트

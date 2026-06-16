@@ -43,11 +43,12 @@ VibePoser는 단일 이미지에서 사람의 3D 포즈를 추출하고, 이를 
 - 현재는 모델을 한 번 로딩한 뒤 앱이 켜져 있는 동안 계속 재사용하는 방식으로 타협한 상태다.
 - 이 방식은 반복 실행 시 메모리 증가를 막지만, 앱 실행 중에는 약 5-6GB 수준의 VRAM을 계속 점유할 수 있다.
 - 2026-06-17 기준 Tkinter UI 갱신, 웹캠 루프 중복 방지, 슬라이더 OSC debounce 안정화 패치가 적용되었다.
+- 2026-06-17 기준 SMPL 변환 결과는 GPU 텐서가 아니라 CPU 캐시로 보관하고, preview/OSC 계산 시에만 임시로 모델 디바이스에 올린다.
 
 ## 다음 할 일
 - 큰 구조 개선을 한다면 `pose_app.py`의 무거운 PyTorch 추론/변환 로직을 별도 워커 프로세스로 분리한다.
 - GUI 메인 프로세스는 가볍게 유지하고, 추론 버튼 클릭 시 별도 프로세스를 띄운 뒤 결과만 Queue/Pipe/파일 등으로 돌려받는 구조를 검토한다.
-- 중간 단계로 `self.smpl_result`를 GPU 텐서 대신 CPU 텐서/NumPy 캐시로 보관하는 최적화를 검토한다.
+- 중간 단계로 preview mesh/Matplotlib 렌더링 경량화를 검토한다.
 - CUDA OOM, 모델 로딩 실패, OSC 송출 실패가 UI 전체 크래시로 이어지지 않도록 에러 전달/표시 방식을 정리한다.
 - 작업 전에는 항상 이 파일과 `AGENT.md`를 읽고, 이전 실패 이력을 반복하지 않는다.
 
@@ -70,6 +71,12 @@ VibePoser는 단일 이미지에서 사람의 3D 포즈를 추출하고, 이를 
   - 웹캠 프레임 UI 예약이 무한히 쌓이지 않도록 frame pending 플래그를 추가했다.
   - 추론 시작 시 `current_image` 복사본을 사용해 웹캠 갱신과의 경합을 줄였다.
   - 슬라이더 변화에 따른 OSC 전송을 150ms debounce로 묶고, UI 값 캡처 후 별도 스레드에서 OSC를 송출하도록 바꿨다.
+  - `python -m py_compile pose_app.py`로 문법 확인을 통과했다.
+- 2026-06-17: 2차 메모리 최적화 패치를 진행했다.
+  - `self.smpl_result`를 GPU 텐서 clone이 아니라 CPU 캐시로 보관하도록 변경했다.
+  - `cache_smpl_result_on_cpu(...)`, `smpl_result_to_device(...)`, `smpl_result_to_numpy(...)` 헬퍼를 추가했다.
+  - SMPL preview와 OSC grounding 계산 시에만 CPU 캐시를 임시로 모델 디바이스에 올리도록 바꿨다.
+  - OSC payload 생성은 CPU/NumPy 데이터를 사용하도록 정리했다.
   - `python -m py_compile pose_app.py`로 문법 확인을 통과했다.
 
 ## 이전 세션 기록
