@@ -1,0 +1,69 @@
+# VibePoser AI Work Log
+
+Last updated: 2026-05-11
+
+## 현재 상태
+- 이 저장소는 `VibePoser`라는 Python/Tkinter 기반 GUI 툴을 담고 있다.
+- 메인 실행 파일은 `pose_app.py`이며, `VibePoser.bat`와 Pixi 환경(`pixi.toml`, `pixi.lock`)을 통해 실행하는 구조로 보인다.
+- 기존 인수인계 문서는 `handover.md`에 있으며, 현재 아키텍처와 메모리 이슈 분석이 정리되어 있다.
+- `00_ai_guidelines.txt`는 읽기 전용 가이드라인이다. 수정하지 않는다.
+
+## 툴 개요
+VibePoser는 단일 이미지에서 사람의 3D 포즈를 추출하고, 이를 SMPL/SMPL-X 기반 포즈 데이터로 변환한 뒤 OSC로 외부 프로그램에 송출하기 위한 로컬 GUI 도구다.
+
+주요 흐름:
+1. 사용자가 Tkinter GUI에서 이미지를 불러온다.
+2. SAM 3D Body 계열 모델이 이미지에서 3D 신체 포즈와 메쉬 정보를 추론한다.
+3. MHR/SMPL 변환 단계에서 추론 결과를 SMPL-X 포즈 파라미터와 조인트 회전값으로 변환한다.
+4. 변환된 포즈 데이터를 OSC UDP 메시지로 언리얼 엔진, VRChat, 기타 수신 프로그램에 보낼 수 있다.
+
+## 주요 구성
+- `pose_app.py`: GUI, 모델 로딩, 추론, 변환, OSC 송출, 로그 출력이 들어 있는 중심 파일.
+- `sam-3d-body/`: SAM 3D Body 관련 소스 코드.
+- `sam-3d-body-dinov3/`: SAM 3D Body/DINOv3 계열 모델 가중치 위치.
+- `MHR-main/`: MHR 및 SMPL 변환 관련 코드.
+- `smplx/`: SMPL-X 모델 데이터 위치.
+- `logs/`: 실행 중 생성되는 VibePoser 로그 파일 위치.
+- `handover.md`: 이전 작업자가 남긴 상세 아키텍처 및 인수인계 문서.
+
+## 기술 스택
+- Python 3.12
+- Tkinter GUI
+- PyTorch/CUDA
+- OpenCV
+- NumPy/SciPy
+- Trimesh
+- Matplotlib
+- python-osc
+- smplx
+- Pixi 환경 관리
+
+## 현재 알려진 설계 이슈
+- SAM3D/DINOv3/PyTorch 모델을 같은 Python 프로세스 안에서 반복 로딩/삭제하면 RAM/VRAM 누수가 발생했던 이력이 있다.
+- 현재는 모델을 한 번 로딩한 뒤 앱이 켜져 있는 동안 계속 재사용하는 방식으로 타협한 상태다.
+- 이 방식은 반복 실행 시 메모리 증가를 막지만, 앱 실행 중에는 약 5-6GB 수준의 VRAM을 계속 점유할 수 있다.
+
+## 다음 할 일
+- 큰 구조 개선을 한다면 `pose_app.py`의 무거운 PyTorch 추론/변환 로직을 별도 워커 프로세스로 분리한다.
+- GUI 메인 프로세스는 가볍게 유지하고, 추론 버튼 클릭 시 별도 프로세스를 띄운 뒤 결과만 Queue/Pipe/파일 등으로 돌려받는 구조를 검토한다.
+- CUDA OOM, 모델 로딩 실패, OSC 송출 실패가 UI 전체 크래시로 이어지지 않도록 에러 전달/표시 방식을 정리한다.
+- 작업 전에는 항상 이 파일과 `handover.md`를 읽고, 이전 실패 이력을 반복하지 않는다.
+
+## 오류 및 해결 이력
+- 2026-05-11: `00_ai_guidelines.txt`를 PowerShell 기본 인코딩으로 읽으면 한글이 깨져 보였다.
+  - 해결: `Get-Content -Encoding UTF8`로 다시 읽어 정상 확인했다.
+- 이전 이력: 모델을 매번 `del`로 삭제하고 재로딩하는 방식에서 실행 1회당 약 665MB씩 메모리가 증가하는 누수 문제가 있었다.
+  - 현재 대응: 모델 삭제/재로딩을 피하고, 앱 실행 중 모델을 캐시하여 재사용한다.
+  - 장기 해결 방향: PyTorch 모델 작업을 별도 프로세스로 격리하고 작업 종료 시 프로세스를 종료해 OS 레벨에서 메모리를 회수한다.
+
+## 이번 세션 기록
+- `00_ai_guidelines.txt`를 읽고 프로젝트 작업 규칙을 확인했다.
+- 기존 `handover.md`, `pose_app.py`, `pixi.toml`을 확인해 VibePoser의 목적과 현재 구조를 요약했다.
+- 신규 작업 로그 파일 `01_AI_WORK_LOG.md`를 생성했다.
+- `pose_app.py`에서 SMPL 변환 관련 UI 동작을 수정했다.
+  - 핫키 기본값을 `\`에서 `-`로 변경했다.
+  - 핫키 입력 시 기존 원샷 흐름 대신 `2. SMPL 변환 (+전송)` 버튼 동작을 직접 호출하도록 연결했다.
+  - 포즈 데이터가 없어 자동 추출을 먼저 실행한 뒤 `포즈 자동 추출 완료 -> SMPL 변환 중 0%` 메시지가 표시되도록 했다.
+  - SMPL 변환 진행 콜백에서 상태 문구에 현재 퍼센트를 표시하도록 했다.
+  - SMPL 변환 완료 시 Windows 알림음을 울리도록 했다.
+  - `pixi run python -m py_compile pose_app.py`로 문법 확인을 통과했다.

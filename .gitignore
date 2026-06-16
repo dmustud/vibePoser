@@ -1,0 +1,25 @@
+# Pixi environments
+.pixi/*
+!.pixi/config.toml
+
+# Runtime/cache output
+__pycache__/
+*.py[cod]
+logs/
+backup/
+
+# Large local model assets and vendored research repos.
+# This repo is for personal code/config backup; recreate these locally from
+# their original sources instead of committing multi-GB assets.
+sam-3d-body/
+MHR-main/
+sam-3d-body-dinov3/
+smplx/
+
+# Common large ML artifacts, wherever they appear.
+*.ckpt
+*.pt
+*.pth
+*.pkl
+*.npz
+*.npy
