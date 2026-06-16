@@ -1,11 +1,11 @@
 # VibePoser AI Work Log
 
-Last updated: 2026-05-11
+Last updated: 2026-06-17
 
 ## 현재 상태
 - 이 저장소는 `VibePoser`라는 Python/Tkinter 기반 GUI 툴을 담고 있다.
 - 메인 실행 파일은 `pose_app.py`이며, `VibePoser.bat`와 Pixi 환경(`pixi.toml`, `pixi.lock`)을 통해 실행하는 구조로 보인다.
-- 기존 인수인계 문서는 `handover.md`에 있으며, 현재 아키텍처와 메모리 이슈 분석이 정리되어 있다.
+- 현재 인수인계 문서는 `AGENT.md`에 있으며, 아키텍처, 메모리 이슈, GitHub 개인 백업 정책, 안정화 패치 메모가 정리되어 있다.
 - `00_ai_guidelines.txt`는 읽기 전용 가이드라인이다. 수정하지 않는다.
 
 ## 툴 개요
@@ -24,7 +24,7 @@ VibePoser는 단일 이미지에서 사람의 3D 포즈를 추출하고, 이를 
 - `MHR-main/`: MHR 및 SMPL 변환 관련 코드.
 - `smplx/`: SMPL-X 모델 데이터 위치.
 - `logs/`: 실행 중 생성되는 VibePoser 로그 파일 위치.
-- `handover.md`: 이전 작업자가 남긴 상세 아키텍처 및 인수인계 문서.
+- `AGENT.md`: 현재 상세 아키텍처 및 인수인계 문서.
 
 ## 기술 스택
 - Python 3.12
@@ -42,12 +42,14 @@ VibePoser는 단일 이미지에서 사람의 3D 포즈를 추출하고, 이를 
 - SAM3D/DINOv3/PyTorch 모델을 같은 Python 프로세스 안에서 반복 로딩/삭제하면 RAM/VRAM 누수가 발생했던 이력이 있다.
 - 현재는 모델을 한 번 로딩한 뒤 앱이 켜져 있는 동안 계속 재사용하는 방식으로 타협한 상태다.
 - 이 방식은 반복 실행 시 메모리 증가를 막지만, 앱 실행 중에는 약 5-6GB 수준의 VRAM을 계속 점유할 수 있다.
+- 2026-06-17 기준 Tkinter UI 갱신, 웹캠 루프 중복 방지, 슬라이더 OSC debounce 안정화 패치가 적용되었다.
 
 ## 다음 할 일
 - 큰 구조 개선을 한다면 `pose_app.py`의 무거운 PyTorch 추론/변환 로직을 별도 워커 프로세스로 분리한다.
 - GUI 메인 프로세스는 가볍게 유지하고, 추론 버튼 클릭 시 별도 프로세스를 띄운 뒤 결과만 Queue/Pipe/파일 등으로 돌려받는 구조를 검토한다.
+- 중간 단계로 `self.smpl_result`를 GPU 텐서 대신 CPU 텐서/NumPy 캐시로 보관하는 최적화를 검토한다.
 - CUDA OOM, 모델 로딩 실패, OSC 송출 실패가 UI 전체 크래시로 이어지지 않도록 에러 전달/표시 방식을 정리한다.
-- 작업 전에는 항상 이 파일과 `handover.md`를 읽고, 이전 실패 이력을 반복하지 않는다.
+- 작업 전에는 항상 이 파일과 `AGENT.md`를 읽고, 이전 실패 이력을 반복하지 않는다.
 
 ## 오류 및 해결 이력
 - 2026-05-11: `00_ai_guidelines.txt`를 PowerShell 기본 인코딩으로 읽으면 한글이 깨져 보였다.
@@ -57,6 +59,20 @@ VibePoser는 단일 이미지에서 사람의 3D 포즈를 추출하고, 이를 
   - 장기 해결 방향: PyTorch 모델 작업을 별도 프로세스로 격리하고 작업 종료 시 프로세스를 종료해 OS 레벨에서 메모리를 회수한다.
 
 ## 이번 세션 기록
+- 2026-06-17: GitHub 원격 `https://github.com/dmustud/vibePoser.git`를 연결하고 개인 백업용 첫 커밋을 푸시했다.
+- 2026-06-17: 대형 외부 자산과 런타임 산출물을 `.gitignore`에 제외했다.
+  - 제외 대상: `.pixi/`, `logs/`, `backup/`, `__pycache__/`, `sam-3d-body/`, `MHR-main/`, `sam-3d-body-dinov3/`, `smplx/`, ML 모델 파일 확장자.
+- 2026-06-17: `AGENT.md`에 GitHub 백업 정책과 외부 모델/라이브러리 운용 방식을 추가했다.
+- 2026-06-17: 1차 안정화 패치를 진행했다.
+  - Tkinter UI 갱신용 `run_on_ui(...)`, `set_status(...)` 헬퍼를 추가했다.
+  - 로그, 로딩 애니메이션, 모델 초기화 상태, 이미지 표시, 3D plot 갱신을 메인 UI 스레드로 우회시켰다.
+  - 웹캠 전환 시 이전 루프가 중복 실행되지 않도록 세대 번호와 lock/thread 관리를 추가했다.
+  - 웹캠 프레임 UI 예약이 무한히 쌓이지 않도록 frame pending 플래그를 추가했다.
+  - 추론 시작 시 `current_image` 복사본을 사용해 웹캠 갱신과의 경합을 줄였다.
+  - 슬라이더 변화에 따른 OSC 전송을 150ms debounce로 묶고, UI 값 캡처 후 별도 스레드에서 OSC를 송출하도록 바꿨다.
+  - `python -m py_compile pose_app.py`로 문법 확인을 통과했다.
+
+## 이전 세션 기록
 - `00_ai_guidelines.txt`를 읽고 프로젝트 작업 규칙을 확인했다.
 - 기존 `handover.md`, `pose_app.py`, `pixi.toml`을 확인해 VibePoser의 목적과 현재 구조를 요약했다.
 - 신규 작업 로그 파일 `01_AI_WORK_LOG.md`를 생성했다.

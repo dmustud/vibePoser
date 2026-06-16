@@ -203,9 +203,14 @@ class DirectMHRApp:
             sys.stderr = LogRedirector(lambda msg: self.log_to_ui(f"[STDERR] {msg}"), level="ERROR")
         
         self.osc_client = udp_client.SimpleUDPClient("127.0.0.1", 9000)
+        self.ui_thread_id = threading.get_ident()
         
         self.webcam_running = False
         self.cap = None
+        self.webcam_thread = None
+        self.webcam_generation = 0
+        self.webcam_lock = threading.Lock()
+        self.webcam_frame_pending = False
         self.current_image = None
         
         self.estimator = None
@@ -232,6 +237,7 @@ class DirectMHRApp:
         self.is_recording_hotkey = False
         self.hotkey_hook = None
         self.rotation_changed_flag = False
+        self.osc_after_id = None
         
         # Handle Close Window
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -260,10 +266,14 @@ class DirectMHRApp:
 
     def on_close(self):
         """Explicitly stop background threads and release resources on exit."""
-        self.webcam_running = False
-        if hasattr(self, 'cap') and self.cap:
+        with self.webcam_lock:
+            self.webcam_running = False
+            self.webcam_generation += 1
+            cap = self.cap
+            self.cap = None
+        if cap:
             try:
-                self.cap.release()
+                cap.release()
             except:
                 pass
         self.root.destroy()
@@ -277,7 +287,25 @@ class DirectMHRApp:
         else:
             btn.config(state=tk.NORMAL, bg=normal_bg)
 
+    def is_ui_thread(self):
+        return threading.get_ident() == self.ui_thread_id
+
+    def run_on_ui(self, callback, *args, delay=0):
+        if self.is_ui_thread() and delay == 0:
+            callback(*args)
+        else:
+            self.root.after(delay, lambda: callback(*args))
+
+    def set_status(self, text=None, color=None):
+        if text is not None:
+            self.status_var.set(text)
+        if color is not None:
+            self.status_label.config(fg=color)
+
     def log_to_ui(self, msg):
+        if not self.is_ui_thread():
+            self.run_on_ui(self.log_to_ui, msg)
+            return
         if hasattr(self, 'txt_log'):
             self.txt_log.config(state=tk.NORMAL)
             self.txt_log.insert(tk.END, msg + "\n")
@@ -453,16 +481,22 @@ class DirectMHRApp:
         # Detect available cameras
         cams = self.list_available_cameras()
         if cams:
-            self.cam_combo['values'] = [f"Camera {i}" for i in cams]
-            self.cam_combo.current(0)
-            self.start_webcam(cams[0])
+            self.run_on_ui(self.apply_camera_list, cams)
         else:
             log_cmd("No cameras detected!", "ERROR", app_instance=self)
-            self.cam_combo['values'] = ["No Camera"]
-            self.cam_combo.current(0)
+            self.run_on_ui(self.apply_no_camera)
 
         threading.Thread(target=self.init_models, daemon=True).start()
         threading.Thread(target=self.loading_animation, daemon=True).start()
+
+    def apply_camera_list(self, cams):
+        self.cam_combo['values'] = [f"Camera {i}" for i in cams]
+        self.cam_combo.current(0)
+        self.start_webcam(cams[0])
+
+    def apply_no_camera(self):
+        self.cam_combo['values'] = ["No Camera"]
+        self.cam_combo.current(0)
 
     def list_available_cameras(self, max_to_test=5):
         available_indices = []
@@ -580,7 +614,7 @@ class DirectMHRApp:
         chars = itertools.cycle(['|', '/', '-', '\\'])
         while self.is_loading:
             try:
-                self.status_var.set(f"{self.status_base_text} {next(chars)}")
+                self.run_on_ui(self.status_var.set, f"{self.status_base_text} {next(chars)}")
                 time.sleep(0.1)
             except: break
 
@@ -636,16 +670,13 @@ class DirectMHRApp:
 
     def update_ui_state(self):
         if self.load_failed:
-            self.root.after(0, lambda: self.status_var.set("로딩 실패 (로그 확인)"))
-            self.root.after(0, lambda: self.status_label.config(fg="red"))
+            self.run_on_ui(self.set_status, "로딩 실패 (로그 확인)", "red")
         elif self.smplx_model:
-            self.root.after(0, lambda: self.status_var.set("준비완료 (온디맨드)"))
-            self.root.after(0, lambda: self.status_label.config(fg="green"))
-            self.root.after(0, self.enable_all_buttons)
+            self.run_on_ui(self.set_status, "준비완료 (온디맨드)", "green")
+            self.run_on_ui(self.enable_all_buttons)
         else:
-            self.root.after(0, lambda: self.status_var.set("준비완료 (변환 불가)"))
-            self.root.after(0, lambda: self.status_label.config(fg="orange"))
-            self.root.after(0, lambda: self.btn_extract.config(state=tk.NORMAL))
+            self.run_on_ui(self.set_status, "준비완료 (변환 불가)", "orange")
+            self.run_on_ui(lambda: self.btn_extract.config(state=tk.NORMAL))
 
     def enable_all_buttons(self):
         self.set_button_state(self.btn_extract, tk.NORMAL, "#e6fffa")
@@ -660,7 +691,7 @@ class DirectMHRApp:
         self.disable_all_buttons()
         self.status_base_text = "1. 포즈 추출 중"
         self.is_loading = True
-        self.root.after(0, lambda: self.status_label.config(fg="orange")) 
+        self.run_on_ui(self.set_status, None, "orange")
         threading.Thread(target=self.loading_animation, daemon=True).start()
         threading.Thread(target=self.process_pose, daemon=True).start()
 
@@ -668,20 +699,20 @@ class DirectMHRApp:
         self.disable_all_buttons()
         self.status_base_text = "2. SMPL 변환 중 0%"
         self.is_loading = True
-        self.root.after(0, lambda: self.status_label.config(fg="orange")) 
+        self.run_on_ui(self.set_status, None, "orange")
         threading.Thread(target=self.loading_animation, daemon=True).start()
         threading.Thread(target=self.process_conversion, daemon=True).start()
 
     def btn_send_click(self):
-        self.send_osc_data()
+        ui_state = self.get_osc_ui_state()
+        threading.Thread(target=self.send_osc_data, args=(ui_state,), daemon=True).start()
 
     def btn_oneshot_click(self):
-        self.disable_all_buttons()
-        threading.Thread(target=self.run_oneshot, daemon=True).start()
+        self.btn_convert_click()
 
     def run_oneshot(self):
         # Redirect the old oneshot logic to the new combined button 2 logic
-        self.btn_convert_click()
+        self.run_on_ui(self.btn_convert_click)
 
     def notify_conversion_complete(self):
         """Play a short completion sound after SMPL conversion finishes."""
@@ -694,9 +725,10 @@ class DirectMHRApp:
                 pass
 
     def process_pose(self, silent=False):
-        if self.current_image is None: 
+        image = self.current_image.copy() if self.current_image is not None else None
+        if image is None:
             self.is_loading = False
-            self.root.after(1000, self.enable_all_buttons)
+            self.run_on_ui(self.enable_all_buttons, delay=1000)
             return False
             
         try:
@@ -724,7 +756,7 @@ class DirectMHRApp:
                 self.estimator = SAM3DBodyEstimator(model, cfg, None, None, None)
             
             if not silent: log_cmd("포즈 추론 중...", "INFO", app_instance=self)
-            outputs = self.estimator.process_one_image(self.current_image, bbox_thr=0.5, use_mask=False)
+            outputs = self.estimator.process_one_image(image, bbox_thr=0.5, use_mask=False)
             
             if not outputs:
                 if not silent: log_cmd("사람을 감지하지 못했습니다.", "WARNING", app_instance=self)
@@ -734,7 +766,7 @@ class DirectMHRApp:
             self.processed_data = outputs[0]
             self.smpl_result = None 
             
-            vis = self.current_image.copy()
+            vis = image.copy()
             for i1, i2 in MHR70_SKELETON_PAIRS:
                 k = self.processed_data['pred_keypoints_2d']
                 if i1 < len(k) and i2 < len(k):
@@ -752,7 +784,7 @@ class DirectMHRApp:
                     self.orig_mhr_verts = None
                 
                 # Apply current rotation sliders immediately (Reset View for new Pose)
-                self.on_rotation_change(reset_view=True)
+                self.run_on_ui(lambda: self.on_rotation_change(reset_view=True, auto_send=False))
             
             # --- Break reference to raw outputs to free VRAM immediately ---
             del outputs
@@ -761,15 +793,14 @@ class DirectMHRApp:
             self.is_loading = False
             
             if not silent:
-                self.root.after(0, lambda: self.status_var.set("포즈 추출 완료"))
-                self.root.after(0, lambda: self.status_label.config(fg="green"))
-                self.root.after(0, self.enable_all_buttons)
+                self.run_on_ui(self.set_status, "포즈 추출 완료", "green")
+                self.run_on_ui(self.enable_all_buttons)
             
             return True
         except Exception as e:
             self.is_loading = False
             log_cmd(f"추론 에러: {e}", "ERROR")
-            self.root.after(0, self.enable_all_buttons)
+            self.run_on_ui(self.enable_all_buttons)
             return False
         finally:
             self.is_loading = False # Ensure loading animation stops
@@ -779,26 +810,25 @@ class DirectMHRApp:
         if not self.processed_data:
             if not silent: log_cmd("포즈 데이터가 없어 자동 추출을 먼저 진행합니다.", "INFO", app_instance=self)
             self.status_base_text = "1. 포즈 자동 추출 중"
-            self.root.after(0, lambda: self.status_label.config(fg="orange"))
+            self.run_on_ui(self.set_status, None, "orange")
             success = self.process_pose(silent=True)
             if not success:
                 self.is_loading = False
-                self.root.after(1000, self.enable_all_buttons)
+                self.run_on_ui(self.enable_all_buttons, delay=1000)
                 return False
             
             self.status_base_text = "포즈 자동 추출 완료 -> SMPL 변환 중 0%"
-            self.root.after(0, lambda: self.status_var.set("포즈 자동 추출 완료 -> SMPL 변환 중 0%"))
-            self.root.after(0, lambda: self.status_label.config(fg="orange"))
+            self.run_on_ui(self.set_status, "포즈 자동 추출 완료 -> SMPL 변환 중 0%", "orange")
 
         if not self.processed_data or not self.smplx_model:
             if not silent: log_cmd("데이터 없음 / SMPL 모델 없음", "ERROR", app_instance=self)
             self.is_loading = False
-            self.root.after(1000, self.enable_all_buttons)
+            self.run_on_ui(self.enable_all_buttons, delay=1000)
             return False
             
         if not hasattr(self, 'mhr_model') or self.mhr_model is None:
             try:
-                self.root.after(0, self.disable_all_buttons)
+                self.run_on_ui(self.disable_all_buttons)
                 if not silent: log_cmd("MHR 변환기 로딩 중... (최초 1회만, 메모리 유지)", "INFO", app_instance=self)
                 
                 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -815,10 +845,10 @@ class DirectMHRApp:
             except Exception as e:
                 log_cmd(f"MHR 로드 에러: {e}", "ERROR", app_instance=self)
                 self.is_loading = False
-                self.root.after(1000, self.enable_all_buttons)
+                self.run_on_ui(self.enable_all_buttons, delay=1000)
                 return False
         else:
-            self.root.after(0, self.disable_all_buttons)
+            self.run_on_ui(self.disable_all_buttons)
             if not silent: log_cmd("캐시된 MHR 변환기 사용 중...", "INFO", app_instance=self)
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -826,7 +856,7 @@ class DirectMHRApp:
             
             if not silent: log_cmd("SMPL 변환 시작...", "INFO", app_instance=self)
             self.status_base_text = "2. SMPL 변환 중 0%"
-            self.root.after(0, lambda: self.status_var.set("2. SMPL 변환 중 0%"))
+            self.run_on_ui(self.set_status, "2. SMPL 변환 중 0%", None)
             
             verts = torch.from_numpy(self.processed_data['pred_vertices']).float().to(device).unsqueeze(0)
             verts_cm = verts * 100.0 
@@ -840,8 +870,7 @@ class DirectMHRApp:
                 except Exception:
                     progress_percent = 0
                 self.status_base_text = f"2. SMPL 변환 중 {progress_percent}%"
-                self.root.after(0, lambda percent=progress_percent: self.status_var.set(f"2. SMPL 변환 중 {percent}%"))
-                self.root.after(0, lambda: self.status_label.config(fg="orange"))
+                self.run_on_ui(self.set_status, f"2. SMPL 변환 중 {progress_percent}%", "orange")
 
             result = self.converter.convert_mhr2smpl(
                 mhr_vertices=verts_cm,
@@ -864,10 +893,9 @@ class DirectMHRApp:
             log_cmd("SMPL 파라미터 생성 완료!", "SUCCESS", app_instance=self)
             
             # Reset UI to ready
-            self.root.after(0, lambda: self.status_var.set("2. SMPL 변환 완료"))
-            self.root.after(0, lambda: self.status_label.config(fg="green"))
-            self.root.after(0, self.notify_conversion_complete)
-            self.root.after(0, self.enable_all_buttons)
+            self.run_on_ui(self.set_status, "2. SMPL 변환 완료", "green")
+            self.run_on_ui(self.notify_conversion_complete)
+            self.run_on_ui(self.enable_all_buttons)
             
             # --- Update 3D Preview with SMPL Joints ---
             with torch.no_grad():
@@ -881,7 +909,7 @@ class DirectMHRApp:
                 else:
                     self.orig_smpl_verts = None
                 
-                self.on_rotation_change(reset_view=True)
+                self.run_on_ui(lambda: self.on_rotation_change(reset_view=True, auto_send=False))
                 
             # Auto OSC send
             self.send_osc_data()
@@ -897,12 +925,12 @@ class DirectMHRApp:
         
         except Exception as e:
             self.is_loading = False
-            self.root.after(0, self.enable_all_buttons)
+            self.run_on_ui(self.enable_all_buttons)
             log_cmd(f"변환 에러: {e}", "ERROR", app_instance=self)
             traceback.print_exc()
             return False
         finally:
-            self.root.after(0, self.enable_all_buttons)
+            self.run_on_ui(self.enable_all_buttons)
             
             # --- MEMORY LEAK FIX BY PINNING MODELS ---
             # Do NOT delete self.estimator (SAM3D) or self.mhr_model (MHR)!
@@ -930,10 +958,14 @@ class DirectMHRApp:
 
     def trigger_oneshot_from_hotkey(self):
         """Callback for the global hotkey."""
+        if not self.is_ui_thread():
+            self.run_on_ui(self.trigger_oneshot_from_hotkey)
+            return
+
         # Check if buttons are enabled (not already processing)
         if self.btn_convert['state'] == tk.NORMAL:
             log_cmd(f"핫키 ({self.hotkey_oneshot}) 입력됨", "INFO", app_instance=self)
-            self.root.after(0, self.btn_convert_click)
+            self.run_on_ui(self.btn_convert_click)
 
     def btn_hotkey_click(self):
         """Start recording a new hotkey."""
@@ -954,7 +986,7 @@ class DirectMHRApp:
                 new_key = key_event.name
                 log_cmd(f"새 핫키 감지: {new_key}", "INFO", app_instance=self)
                 self.hotkey_oneshot = new_key
-                self.root.after(0, self.update_hotkey_ui)
+                self.run_on_ui(self.update_hotkey_ui)
                 self.setup_hotkeys()
         finally:
             self.is_recording_hotkey = False
@@ -962,8 +994,32 @@ class DirectMHRApp:
     def update_hotkey_ui(self):
         self.btn_hotkey.config(text=self.hotkey_oneshot, bg="#f9f9f9")
 
-    def on_rotation_change(self, *args, reset_view=False):
+    def schedule_osc_send(self, delay_ms=150):
+        if self.osc_after_id is not None:
+            try:
+                self.root.after_cancel(self.osc_after_id)
+            except Exception:
+                pass
+        self.osc_after_id = self.root.after(delay_ms, self.flush_scheduled_osc)
+
+    def flush_scheduled_osc(self):
+        self.osc_after_id = None
+        ui_state = self.get_osc_ui_state()
+        threading.Thread(target=self.send_osc_data, args=(ui_state,), daemon=True).start()
+
+    def get_osc_ui_state(self):
+        return {
+            "pitch": self.pitch_var.get(),
+            "yaw": self.yaw_var.get(),
+            "roll": self.roll_var.get(),
+            "hand_mode": self.hand_mode_var.get(),
+        }
+
+    def on_rotation_change(self, *args, reset_view=False, auto_send=True):
         """Callback to update 3D plot in real-time when sliders move."""
+        if not self.is_ui_thread():
+            self.run_on_ui(lambda: self.on_rotation_change(*args, reset_view=reset_view, auto_send=auto_send))
+            return
         try:
             # Update Integer Labels
             self.pitch_str.set(str(int(self.pitch_var.get())))
@@ -977,8 +1033,8 @@ class DirectMHRApp:
             r_offset = R_scipy.from_euler('xyz', [rx, ry, rz], degrees=True)
 
             # --- Automatic OSC Transmission on Slider Change ---
-            if self.smpl_result is not None:
-                self.send_osc_data()
+            if auto_send and self.smpl_result is not None:
+                self.schedule_osc_send()
 
             # Case A: We have SMPL joints (Prioritize for precision)
             if self.orig_smpl_joints is not None:
@@ -1010,8 +1066,14 @@ class DirectMHRApp:
             traceback.print_exc()
             pass # Avoid spamming errors during slider move
 
-    def send_osc_data(self):
+    def send_osc_data(self, ui_state=None):
         if not self.smpl_result: return
+        if ui_state is None:
+            if not self.is_ui_thread():
+                self.run_on_ui(lambda: threading.Thread(target=self.send_osc_data, args=(self.get_osc_ui_state(),), daemon=True).start())
+                return
+            ui_state = self.get_osc_ui_state()
+
         log_cmd("OSC 전송 준비 (배열 통합 방식)...", "INFO", app_instance=self)
         try:
             data = {k: v.detach().cpu().numpy()[0] for k, v in self.smpl_result.items()}
@@ -1025,9 +1087,9 @@ class DirectMHRApp:
 
             # --- 회전 보정 (UI 슬라이더) ---
             orig_global_orient = data['global_orient'].copy()
-            rx = self.pitch_var.get() - 90.0
-            ry = self.yaw_var.get()
-            rz = self.roll_var.get()
+            rx = ui_state["pitch"] - 90.0
+            ry = ui_state["yaw"]
+            rz = ui_state["roll"]
             
             r_offset = R_scipy.from_euler('xyz', [rx, ry, rz], degrees=True)
             r_global = r_offset * R_scipy.from_rotvec(orig_global_orient)
@@ -1091,7 +1153,7 @@ class DirectMHRApp:
             body_pose = data['body_pose'].reshape(-1, 3)
             
             # --- [손 모드 체크 유지] ---
-            if not self.hand_mode_var.get():
+            if not ui_state["hand_mode"]:
                 for name in BONE_HIERARCHY:
                     if name == 'pelvis':
                         add_to_payload('pelvis', data['global_orient'], pel_unreal)
@@ -1133,8 +1195,7 @@ class DirectMHRApp:
             self.osc_client.send_message("/pose/all", all_pose_strings)
             
             log_cmd(f"OSC 전송 완료! (총 {len(all_pose_strings)}개 뼈대 배열 전송)", "SUCCESS", app_instance=self)
-            self.root.after(0, lambda: self.status_var.set("3. OSC 전송 완료"))
-            self.root.after(0, lambda: self.status_label.config(fg="green"))
+            self.run_on_ui(self.set_status, "3. OSC 전송 완료", "green")
         
         except Exception as e:
             log_cmd(f"OSC 실패: {e}", "ERROR", app_instance=self)
@@ -1142,22 +1203,71 @@ class DirectMHRApp:
             traceback.print_exc()
 
     def start_webcam(self, idx):
-        if self.cap: self.cap.release()
-        self.cap = cv2.VideoCapture(idx, cv2.CAP_DSHOW)
-        if not self.cap.isOpened(): self.cap = cv2.VideoCapture(idx+1, cv2.CAP_DSHOW)
-        self.webcam_running = True
-        threading.Thread(target=self.loop_webcam, daemon=True).start()
+        with self.webcam_lock:
+            self.webcam_generation += 1
+            generation = self.webcam_generation
+            self.webcam_running = False
+            old_cap = self.cap
+            old_thread = self.webcam_thread
+            self.cap = None
 
-    def loop_webcam(self):
-        while self.webcam_running:
-            if self.cap:
-                ret, frame = self.cap.read()
-                if ret:
-                    self.current_image = frame
-                    self.display_image(frame, self.lbl_webcam)
+        if old_thread and old_thread.is_alive():
+            old_thread.join(timeout=0.5)
+
+        if old_cap:
+            try:
+                old_cap.release()
+            except Exception:
+                pass
+
+        cap = cv2.VideoCapture(idx, cv2.CAP_DSHOW)
+        if not cap.isOpened():
+            cap.release()
+            cap = cv2.VideoCapture(idx + 1, cv2.CAP_DSHOW)
+        if not cap.isOpened():
+            log_cmd(f"Camera {idx} open failed", "ERROR", app_instance=self)
+            cap.release()
+            return
+
+        with self.webcam_lock:
+            if generation != self.webcam_generation:
+                cap.release()
+                return
+            self.cap = cap
+            self.webcam_running = True
+            self.webcam_thread = threading.Thread(target=self.loop_webcam, args=(generation, cap), daemon=True)
+            self.webcam_thread.start()
+
+    def loop_webcam(self, generation, cap):
+        while True:
+            with self.webcam_lock:
+                should_run = self.webcam_running and generation == self.webcam_generation and cap is self.cap
+            if not should_run:
+                break
+            ret, frame = cap.read()
+            if ret:
+                self.current_image = frame.copy()
+                self.display_image(frame, self.lbl_webcam)
             time.sleep(0.03)
 
     def display_image(self, cv_img, lbl):
+        if not self.is_ui_thread():
+            if hasattr(self, 'lbl_webcam') and lbl is self.lbl_webcam:
+                if self.webcam_frame_pending:
+                    return
+                self.webcam_frame_pending = True
+
+                def render_webcam_frame(img=cv_img.copy(), label=lbl):
+                    try:
+                        self.display_image(img, label)
+                    finally:
+                        self.webcam_frame_pending = False
+
+                self.run_on_ui(render_webcam_frame)
+                return
+
+            self.run_on_ui(self.display_image, cv_img.copy(), lbl)
+            return
         try:
             h, w = cv_img.shape[:2]
             scale = min(lbl.winfo_width()/w, lbl.winfo_height()/h)
@@ -1168,6 +1278,12 @@ class DirectMHRApp:
         except: pass
 
     def update_3d_plot(self, kpts, is_smpl=False, verts=None, update_limits=True):
+        if not self.is_ui_thread():
+            kpts_copy = kpts.copy()
+            verts_copy = verts.copy() if verts is not None else None
+            self.run_on_ui(self.update_3d_plot, kpts_copy, is_smpl, verts_copy, update_limits)
+            return
+
         # DO NOT USE self.ax.clear() - It resets the camera and causes jumps.
         # Instead, remove only the added plot artists.
         for artist in list(self.ax.collections):
@@ -1265,7 +1381,7 @@ class DirectMHRApp:
         
         # IMPORTANT: Never call view_init here to respect user manual rotation
         
-        self.canvas.draw()
+        self.canvas.draw_idle()
         
     def on_mouse_wheel(self, event):
         # Zoom factor logic: 
