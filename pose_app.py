@@ -196,7 +196,7 @@ class DirectMHRApp:
         self.root = root
         self.root.title("Vibe Poser")
         self.root.geometry("1250x900") 
-        icon_path = os.path.join(CURRENT_DIR, "assets", "vibeposer-icon.ico")
+        icon_path = os.path.join(CURRENT_DIR, "assets", "vibeposer-app.ico")
         if os.path.exists(icon_path):
             try:
                 self.root.iconbitmap(icon_path)
