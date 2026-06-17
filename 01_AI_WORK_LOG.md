@@ -44,12 +44,11 @@ VibePoser는 단일 이미지에서 사람의 3D 포즈를 추출하고, 이를 
 - 이 방식은 반복 실행 시 메모리 증가를 막지만, 앱 실행 중에는 약 5-6GB 수준의 VRAM을 계속 점유할 수 있다.
 - 2026-06-17 기준 Tkinter UI 갱신, 웹캠 루프 중복 방지, 슬라이더 OSC debounce 안정화 패치가 적용되었다.
 - 2026-06-17 기준 SMPL 변환 결과는 GPU 텐서가 아니라 CPU 캐시로 보관하고, preview/OSC 계산 시에만 임시로 모델 디바이스에 올린다.
-- 2026-06-17 기준 preview mesh 경량화가 적용되었다. mesh는 face stride로 일부만 그리고, 회전 슬라이더 드래그 중에는 skeleton만 갱신한다.
 
 ## 다음 할 일
 - 큰 구조 개선을 한다면 `pose_app.py`의 무거운 PyTorch 추론/변환 로직을 별도 워커 프로세스로 분리한다.
 - GUI 메인 프로세스는 가볍게 유지하고, 추론 버튼 클릭 시 별도 프로세스를 띄운 뒤 결과만 Queue/Pipe/파일 등으로 돌려받는 구조를 검토한다.
-- MHR -> SMPL 빠른 모드를 만들려면 외부 라이브러리 성격의 `MHR-main/tools/mhr_smpl_conversion` 내부에 iterations 인자를 뚫어야 하므로, 안정 버전에서는 보류한다.
+- 중간 단계로 preview mesh/Matplotlib 렌더링 경량화를 검토한다.
 - CUDA OOM, 모델 로딩 실패, OSC 송출 실패가 UI 전체 크래시로 이어지지 않도록 에러 전달/표시 방식을 정리한다.
 - 작업 전에는 항상 이 파일과 `AGENT.md`를 읽고, 이전 실패 이력을 반복하지 않는다.
 
@@ -89,15 +88,6 @@ VibePoser는 단일 이미지에서 사람의 3D 포즈를 추출하고, 이를 
   - `[PERF] SMPL convert/auto OSC send`
   - `[PERF] OSC/...`
   - CUDA 비동기 타이밍 왜곡을 줄이기 위해 측정 전 `torch.cuda.synchronize()`를 호출한다.
-- 2026-06-17: 현재 사용 버전용 preview 경량화를 적용했다.
-  - `메시 보기 (Light)`로 UI 문구를 바꾸고, mesh preview face를 `mesh_preview_face_stride = 8`로 일부만 렌더링한다.
-  - 회전 슬라이더 드래그 중에는 mesh 렌더링을 생략하고 skeleton만 갱신한다.
-  - 슬라이더 버튼을 놓으면 mesh preview를 다시 갱신한다.
-  - 중복으로 pack되던 `손 모드` 체크박스 호출을 제거했다.
-- 2026-06-17: MHR -> SMPL 변환 옵션을 조사했다.
-  - 공개 `convert_mhr2smpl(...)` API에는 반복 횟수/품질 preset 인자가 없다.
-  - 내부 `PyTorchSMPLFitting._optimize_smpl(...)` 기본 반복 수는 `((40, 80, 40), 300)`이다.
-  - 빠른 모드는 가능해 보이지만 `MHR-main/tools/mhr_smpl_conversion` 내부 API 수정이 필요하므로 현재 안정 버전에는 적용하지 않았다.
 
 ## 이전 세션 기록
 - `00_ai_guidelines.txt`를 읽고 프로젝트 작업 규칙을 확인했다.

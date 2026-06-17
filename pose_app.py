@@ -244,8 +244,6 @@ class DirectMHRApp:
         self.hotkey_hook = None
         self.rotation_changed_flag = False
         self.osc_after_id = None
-        self.rotation_dragging = False
-        self.mesh_preview_face_stride = 8
         
         # Handle Close Window
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -364,8 +362,6 @@ class DirectMHRApp:
             
             s = tk.Scale(f, from_=-180, to=180, orient=tk.HORIZONTAL, variable=variable, 
                          resolution=1, length=125, bg="#f0f0f0", font=("Arial", 8), showvalue=False, command=self.on_rotation_change)
-            s.bind("<ButtonPress-1>", self.on_rotation_drag_start)
-            s.bind("<ButtonRelease-1>", self.on_rotation_drag_end)
             s.pack(side=tk.TOP, fill=tk.X, expand=True)
             return f
 
@@ -392,9 +388,10 @@ class DirectMHRApp:
         
         # Mesh Preview Toggle
         self.show_mesh_var = tk.BooleanVar(value=False)
-        self.chk_show_mesh = tk.Checkbutton(row2_frame, text="메시 보기 (Light)", variable=self.show_mesh_var,
+        self.chk_show_mesh = tk.Checkbutton(row2_frame, text="메시 보기 (Slow)", variable=self.show_mesh_var, 
                                             font=("Arial", 10), bg="#f0f0f0", activebackground="#f0f0f0", command=self.on_rotation_change)
         self.chk_show_mesh.pack(side=tk.LEFT, padx=5)
+        self.chk_hand_mode.pack(side=tk.LEFT, padx=5)
 
         tk.Label(row2_frame, text="| 핫키:", bg="#f0f0f0").pack(side=tk.LEFT, padx=5)
         self.btn_hotkey = tk.Button(row2_frame, text=self.hotkey_oneshot, font=("Arial", 9), command=self.btn_hotkey_click, bg="#f9f9f9", width=12)
@@ -1065,13 +1062,6 @@ class DirectMHRApp:
     def update_hotkey_ui(self):
         self.btn_hotkey.config(text=self.hotkey_oneshot, bg="#f9f9f9")
 
-    def on_rotation_drag_start(self, event=None):
-        self.rotation_dragging = True
-
-    def on_rotation_drag_end(self, event=None):
-        self.rotation_dragging = False
-        self.on_rotation_change(reset_view=False)
-
     def schedule_osc_send(self, delay_ms=150):
         if self.osc_after_id is not None:
             try:
@@ -1121,7 +1111,7 @@ class DirectMHRApp:
                 rotated_joints = (r_offset.as_matrix() @ (self.orig_smpl_joints - pelvis).T).T + pelvis
                 
                 rotated_verts = None
-                if self.show_mesh_var.get() and not self.rotation_dragging and hasattr(self, 'orig_smpl_verts') and self.orig_smpl_verts is not None:
+                if self.show_mesh_var.get() and hasattr(self, 'orig_smpl_verts') and self.orig_smpl_verts is not None:
                     rotated_verts = (r_offset.as_matrix() @ (self.orig_smpl_verts - pelvis).T).T + pelvis
                 
                 self.update_3d_plot(rotated_joints, is_smpl=True, verts=rotated_verts)
@@ -1134,7 +1124,7 @@ class DirectMHRApp:
                 rotated_kpts = (r_offset.as_matrix() @ (self.orig_kpts_3d - pelvis).T).T + pelvis
                 
                 rotated_verts = None
-                if self.show_mesh_var.get() and not self.rotation_dragging and hasattr(self, 'orig_mhr_verts') and self.orig_mhr_verts is not None:
+                if self.show_mesh_var.get() and hasattr(self, 'orig_mhr_verts') and self.orig_mhr_verts is not None:
                     rotated_verts = (r_offset.as_matrix() @ (self.orig_mhr_verts - pelvis).T).T + pelvis
                     
                 self.update_3d_plot(rotated_kpts, is_smpl=False, verts=rotated_verts, update_limits=reset_view)
@@ -1411,8 +1401,6 @@ class DirectMHRApp:
                 faces = self.mhr_faces
             
              if faces is not None:
-                if self.mesh_preview_face_stride > 1:
-                    faces = faces[::self.mesh_preview_face_stride]
                 vx, vy, vz = verts[:, 0], verts[:, 1], -verts[:, 2] # Apply Z-flip
                 self.ax.plot_trisurf(vx, vy, vz, triangles=faces, color='lightgray', alpha=0.5, edgecolor='none', shade=True)
                 
