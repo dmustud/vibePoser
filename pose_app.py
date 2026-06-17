@@ -699,6 +699,22 @@ class DirectMHRApp:
         except Exception:
             return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+    def sync_cuda_if_needed(self):
+        try:
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+        except Exception:
+            pass
+
+    def perf_now(self):
+        self.sync_cuda_if_needed()
+        return time.perf_counter()
+
+    def log_perf(self, label, start_time):
+        elapsed = time.perf_counter() - start_time
+        log_cmd(f"[PERF] {label}: {elapsed:.3f}s", "INFO", app_instance=self)
+        return self.perf_now()
+
     def cache_smpl_result_on_cpu(self, result_parameters):
         cached = {}
         for k, v in result_parameters.items():
@@ -900,11 +916,14 @@ class DirectMHRApp:
         try:
             
             if not silent: log_cmd("SMPL 변환 시작...", "INFO", app_instance=self)
+            total_t = self.perf_now()
             self.status_base_text = "2. SMPL 변환 중 0%"
             self.run_on_ui(self.set_status, "2. SMPL 변환 중 0%", None)
             
+            step_t = self.perf_now()
             verts = torch.from_numpy(self.processed_data['pred_vertices']).float().to(device).unsqueeze(0)
             verts_cm = verts * 100.0 
+            step_t = self.log_perf("SMPL convert/input vertices to device", step_t)
             
             def progress_cb(p):
                 try:
@@ -925,9 +944,11 @@ class DirectMHRApp:
                 batch_size=1,
                 progress_callback=progress_cb
             )
+            step_t = self.log_perf("SMPL convert/convert_mhr2smpl", step_t)
             
             # Keep converted parameters on CPU so the persistent cache does not pin extra VRAM.
             self.smpl_result = self.cache_smpl_result_on_cpu(result.result_parameters)
+            step_t = self.log_perf("SMPL convert/cache result on CPU", step_t)
                     
             log_cmd("SMPL 파라미터 생성 완료!", "SUCCESS", app_instance=self)
             
@@ -939,7 +960,9 @@ class DirectMHRApp:
             # --- Update 3D Preview with SMPL Joints ---
             with torch.no_grad():
                 smpl_params = self.smpl_result_to_device(device)
+                step_t = self.log_perf("SMPL convert/params back to device for preview", step_t)
                 smpl_out = self.smplx_model(**smpl_params)
+                step_t = self.log_perf("SMPL convert/smplx preview forward", step_t)
                 joints = smpl_out.joints.detach().cpu().numpy()[0] # [J, 3]
                 self.orig_smpl_joints = joints.copy()
                 
@@ -950,9 +973,11 @@ class DirectMHRApp:
                     self.orig_smpl_verts = None
                 
                 self.run_on_ui(lambda: self.on_rotation_change(reset_view=True, auto_send=False))
+                step_t = self.log_perf("SMPL convert/preview arrays to CPU", step_t)
                 
             # Auto OSC send
             self.send_osc_data()
+            step_t = self.log_perf("SMPL convert/auto OSC send", step_t)
             
             # 🛑 MEMORY LEAK FIX: Clear huge processed_data dictionaries 
             # after conversion since all SMPL/3D visuals are now independently Cached.
@@ -961,6 +986,7 @@ class DirectMHRApp:
                 self.processed_data = None
 
             del result, verts, verts_cm, smpl_params, smpl_out
+            self.log_perf("SMPL convert/total", total_t)
             
             self.is_loading = False
             return True
@@ -1118,8 +1144,11 @@ class DirectMHRApp:
 
         log_cmd("OSC 전송 준비 (배열 통합 방식)...", "INFO", app_instance=self)
         try:
+            total_t = self.perf_now()
+            step_t = total_t
             device = self.get_model_device()
             data = self.smpl_result_to_numpy()
+            step_t = self.log_perf("OSC/prepare numpy data", step_t)
             
             # --- 변환 행렬 P (Unreal 좌표계) ---
             axis_indices = {'X': 0, 'Y': 1, 'Z': 2}
@@ -1152,6 +1181,7 @@ class DirectMHRApp:
                  min_z_unreal = np.min(joints_unreal[:, 2])
                  pel_unreal[2] -= min_z_unreal
                  del smpl_params, smpl_out
+                 step_t = self.log_perf("OSC/smplx grounding forward", step_t)
 
             # ==========================================
             # [수정된 핵심 로직] 한 번에 보낼 문자열 리스트
@@ -1238,8 +1268,10 @@ class DirectMHRApp:
             #[최종 발사] 모아둔 리스트를 한 번에 언리얼로 쏨
             # ==========================================
             self.osc_client.send_message("/pose/all", all_pose_strings)
+            step_t = self.log_perf("OSC/build payload and send", step_t)
             
             log_cmd(f"OSC 전송 완료! (총 {len(all_pose_strings)}개 뼈대 배열 전송)", "SUCCESS", app_instance=self)
+            self.log_perf("OSC/total", total_t)
             self.run_on_ui(self.set_status, "3. OSC 전송 완료", "green")
         
         except Exception as e:

@@ -78,6 +78,16 @@ VibePoser는 단일 이미지에서 사람의 3D 포즈를 추출하고, 이를 
   - SMPL preview와 OSC grounding 계산 시에만 CPU 캐시를 임시로 모델 디바이스에 올리도록 바꿨다.
   - OSC payload 생성은 CPU/NumPy 데이터를 사용하도록 정리했다.
   - `python -m py_compile pose_app.py`로 문법 확인을 통과했다.
+- 2026-06-17: SMPL 변환 체감 지연 원인 확인을 위해 성능 계측 로그를 추가했다.
+  - `[PERF] SMPL convert/input vertices to device`
+  - `[PERF] SMPL convert/convert_mhr2smpl`
+  - `[PERF] SMPL convert/cache result on CPU`
+  - `[PERF] SMPL convert/params back to device for preview`
+  - `[PERF] SMPL convert/smplx preview forward`
+  - `[PERF] SMPL convert/preview arrays to CPU`
+  - `[PERF] SMPL convert/auto OSC send`
+  - `[PERF] OSC/...`
+  - CUDA 비동기 타이밍 왜곡을 줄이기 위해 측정 전 `torch.cuda.synchronize()`를 호출한다.
 
 ## 이전 세션 기록
 - `00_ai_guidelines.txt`를 읽고 프로젝트 작업 규칙을 확인했다.
